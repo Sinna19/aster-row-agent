@@ -5,8 +5,8 @@ four failure modes called out in the brief: conflicting policy answers, invented
 info, lost multi-turn context, and unsafe retrieved content.
 
 <!-- DEMO: replace with your recorded GIF/video before submitting -->
-**Demo:** `docs/demo.gif` *(record after your first live run — see "Recording the demo" below)*
 
+**Demo:** [![Watch the demo](https://cdn.loom.com/sessions/thumbnails/5fc47ceaa1324bc79694724a35aef26f-with-play.gif)](https://www.loom.com/share/5fc47ceaa1324bc79694724a35aef26f)
 ---
 
 ## 1. Setup and run instructions
