@@ -6,7 +6,7 @@ info, lost multi-turn context, and unsafe retrieved content.
 
 <!-- DEMO: replace with your recorded GIF/video before submitting -->
 
-**Demo:** [![Watch the demo](https://cdn.loom.com/sessions/thumbnails/5fc47ceaa1324bc79694724a35aef26f-with-play.gif)](https://www.loom.com/share/5fc47ceaa1324bc79694724a35aef26f)
+**Demo:** `(https://www.loom.com/share/5fc47ceaa1324bc79694724a35aef26f)` 
 ---
 
 ## 1. Setup and run instructions
