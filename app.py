@@ -44,9 +44,17 @@ def chat_fn(message: str, history: list, session_id: str):
     result = agent.respond(session_id, message)
     reply = result["response"]
 
+    # Agent.respond() reports every KB doc *retrieved* this turn (see Bug 7 in
+    # the README -- document-level retrieval expansion is deliberate), not
+    # just what the model actually cited. For display, only surface sources
+    # the model's own answer text actually names, so an order-lookup answer
+    # (grounded entirely in the order_lookup tool) doesn't show unrelated KB
+    # docs it never touched.
+    cited_sources = [s for s in result["sources"] if s in reply]
+
     extras = []
-    if result["sources"]:
-        extras.append(f"*Sources: {', '.join(sorted(set(result['sources'])))}*")
+    if cited_sources:
+        extras.append(f"*Sources: {', '.join(sorted(set(cited_sources)))}*")
     if result["handoff"]:
         extras.append("*[Recommending human handoff]*")
     if extras:
