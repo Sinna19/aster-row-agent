@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 import uuid
 
-import gradio as gr
+import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,66 +25,70 @@ from app.agent import Agent
 ROOT = os.path.dirname(os.path.abspath(__file__))
 KB_DIR = os.path.join(ROOT, "knowledge-base")
 ORDERS_PATH = os.path.join(ROOT, "data", "orders.json")
-LOG_PATH = os.path.join(ROOT, "logs", "trace.jsonl")
-
-# Built once at startup (TF-IDF indexing over 14 short docs is well under a
-# second -- see README's storage/architecture notes). Shared across all
-# visitors; per-visitor state lives only in Agent.sessions, keyed by session_id.
-agent = Agent(KB_DIR, ORDERS_PATH, log_path=LOG_PATH)
-
-if not os.environ.get("GROQ_API_KEY"):
-    print("WARNING: GROQ_API_KEY is not set. Set it as a Space secret.")
 
 
-def _new_session_id() -> str:
-    return str(uuid.uuid4())
+def _load_streamlit_secrets() -> None:
+    """Allow local .env development and Streamlit Cloud's secrets panel."""
+    for key in ("GROQ_API_KEY", "ASTER_ROW_MODEL"):
+        if not os.environ.get(key) and key in st.secrets:
+            os.environ[key] = str(st.secrets[key])
 
 
-def chat_fn(message: str, history: list, session_id: str):
-    result = agent.respond(session_id, message)
-    reply = result["response"]
-
-    # Agent.respond() reports every KB doc *retrieved* this turn (see Bug 7 in
-    # the README -- document-level retrieval expansion is deliberate), not
-    # just what the model actually cited. For display, only surface sources
-    # the model's own answer text actually names, so an order-lookup answer
-    # (grounded entirely in the order_lookup tool) doesn't show unrelated KB
-    # docs it never touched.
-    cited_sources = [s for s in result["sources"] if s in reply]
-
-    extras = []
-    if cited_sources:
-        extras.append(f"*Sources: {', '.join(sorted(set(cited_sources)))}*")
-    if result["handoff"]:
-        extras.append("*[Recommending human handoff]*")
-    if extras:
-        reply = reply + "\n\n" + "\n".join(extras)
-
-    return reply
+@st.cache_resource(show_spinner="Loading the hybrid retrieval model…")
+def get_agent() -> Agent:
+    # Community Cloud's filesystem is ephemeral, so trace logging is disabled.
+    return Agent(KB_DIR, ORDERS_PATH, log_path=None)
 
 
-demo = gr.ChatInterface(
-    fn=chat_fn,
-    additional_inputs=[gr.State(_new_session_id)],
-    title="Aster & Row Support Agent",
-    description=(
-        "A reliability-focused RAG + tool-calling customer support agent. "
-        "Answers are grounded only in retrieved policy documents (with citations), "
-        "order status comes from a real deterministic tool (never invented), "
-        "and the agent explicitly flags conflicting or non-authoritative sources "
-        "rather than guessing. See the README tab / repo for the full architecture "
-        "and a 9-entry bug diary from building this."
-    ),
-    examples=[
-        ["How long can I return a backpack?"],
-        ["Where is ORD-1007 and when will it arrive?"],
-        ["Do you ship internationally?"],
-        ["Should I put the entire Breeze Tumbler in the dishwasher?"],
-    ],
-)
+def main() -> None:
+    st.set_page_config(page_title="Aster & Row Support", page_icon="🎒")
+    _load_streamlit_secrets()
+
+    st.title("🎒 Aster & Row Support")
+    st.caption("Policy-grounded answers, hybrid retrieval, and privacy-safe order lookup.")
+
+    if not os.environ.get("GROQ_API_KEY"):
+        st.error("This app needs a GROQ_API_KEY. Add it in the app's Streamlit Cloud secrets.")
+        st.code('GROQ_API_KEY = "gsk_..."', language="toml")
+        st.stop()
+
+    if "agent_session_id" not in st.session_state:
+        st.session_state.agent_session_id = str(uuid.uuid4())
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+
+    with st.sidebar:
+        st.subheader("Try a question")
+        st.caption("Each browser session has its own conversation history.")
+        if st.button("Start a new conversation", use_container_width=True):
+            st.session_state.agent_session_id = str(uuid.uuid4())
+            st.session_state.chat_messages = []
+            st.rerun()
+
+    for message in st.session_state.chat_messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    prompt = st.chat_input("Ask about returns, shipping, products, or an order…")
+    if not prompt:
+        return
+
+    st.session_state.chat_messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Checking Aster & Row support information…"):
+            result = get_agent().respond(st.session_state.agent_session_id, prompt)
+        response = result["response"]
+        st.markdown(response)
+        if result["sources"]:
+            st.caption("Sources: " + ", ".join(sorted(set(result["sources"]))))
+        if result["handoff"]:
+            st.warning("A human support specialist is recommended for this request.")
+
+    st.session_state.chat_messages.append({"role": "assistant", "content": response})
+
 
 if __name__ == "__main__":
-    # Render (and most non-HF hosts) assign a port via $PORT and expect the
-    # app to bind on 0.0.0.0, not Gradio's default localhost:7860.
-    port = int(os.environ.get("PORT", 7860))
-    demo.launch(server_name="0.0.0.0", server_port=port)
+    main()

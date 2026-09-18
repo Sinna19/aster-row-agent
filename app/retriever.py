@@ -40,6 +40,7 @@ import re
 import warnings
 from dataclasses import dataclass
 
+import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer, ENGLISH_STOP_WORDS
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -50,6 +51,10 @@ AUTHORITY_WEIGHT = {
     "superseded": 0.30,
     "draft": 0.10,
 }
+
+DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+RRF_K = 60
+SEMANTIC_CANDIDATE_THRESHOLD = 0.45
 
 _TOKEN_RE = re.compile(r"[a-zA-Z]+")
 _SUFFIXES = ("ing", "edly", "ed", "ies", "es", "s")
@@ -117,39 +122,68 @@ class RetrievedChunk:
     raw_score: float
     weighted_score: float
     authoritative: bool
+    semantic_score: float = 0.0
+    hybrid_score: float = 0.0
 
 
 class Retriever:
-    def __init__(self, kb_dir: str):
+    def __init__(self, kb_dir: str, embedding_model=None):
         self.chunks: list[Chunk] = load_chunks(kb_dir)
-        corpus = [f"{c.title} {c.heading} {c.text}" for c in self.chunks]
+        self.corpus = [f"{c.title} {c.heading} {c.text}" for c in self.chunks]
         self.vectorizer = TfidfVectorizer(stop_words=list(_STOP_WORDS), tokenizer=_stemming_tokenizer, token_pattern=None)
         with warnings.catch_warnings():
-            # sklearn flags 2 residual stemmed-stopword edge cases (e.g.
-            # "across" -> "acro" vs. our stemmer's "acros"); harmless, not
-            # worth a heavier stemmer for 2 words. See module docstring.
             warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
-            self.matrix = self.vectorizer.fit_transform(corpus)
+            self.matrix = self.vectorizer.fit_transform(self.corpus)
+
+        if embedding_model is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as exc:  # pragma: no cover - configuration error
+                raise RuntimeError("Hybrid retrieval requires sentence-transformers. Run `pip install -r requirements.txt`.") from exc
+            embedding_model = SentenceTransformer(DEFAULT_EMBEDDING_MODEL)
+        self.embedding_model = embedding_model
+        self.embedding_matrix = np.asarray(
+            self.embedding_model.encode(self.corpus, normalize_embeddings=True, show_progress_bar=False), dtype=np.float32
+        )
+
+    @staticmethod
+    def _rrf_scores(lexical: np.ndarray, semantic: np.ndarray) -> np.ndarray:
+        """Fuse independent rankings without assuming their scores align."""
+        scores = np.zeros(len(lexical), dtype=np.float32)
+        for values in (lexical, semantic):
+            order = np.argsort(-values, kind="stable")
+            ranks = np.empty(len(order), dtype=np.int32)
+            ranks[order] = np.arange(1, len(order) + 1)
+            scores += 1.0 / (RRF_K + ranks)
+        return scores
+
+    def _scores(self, query: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        lexical = cosine_similarity(self.vectorizer.transform([query]), self.matrix)[0]
+        query_embedding = np.asarray(
+            self.embedding_model.encode([query], normalize_embeddings=True, show_progress_bar=False), dtype=np.float32
+        )[0]
+        semantic = self.embedding_matrix @ query_embedding
+        return lexical, semantic, self._rrf_scores(lexical, semantic)
+
+    def _ranked_results(self, query: str, include_zero_overlap: bool) -> list[RetrievedChunk]:
+        lexical, semantic, hybrid = self._scores(query)
+        results = []
+        for chunk, lexical_score, semantic_score, hybrid_score in zip(self.chunks, lexical, semantic, hybrid):
+            if not include_zero_overlap and lexical_score <= 0 and semantic_score < SEMANTIC_CANDIDATE_THRESHOLD:
+                continue
+            results.append(RetrievedChunk(
+                chunk=chunk,
+                raw_score=float(lexical_score),
+                weighted_score=float(hybrid_score) * AUTHORITY_WEIGHT.get(chunk.status, 0.5),
+                authoritative=is_authoritative(chunk),
+                semantic_score=float(semantic_score),
+                hybrid_score=float(hybrid_score),
+            ))
+        results.sort(key=lambda r: r.weighted_score, reverse=True)
+        return results
 
     def search(self, query: str, top_k: int = 5) -> list[RetrievedChunk]:
-        q_vec = self.vectorizer.transform([query])
-        sims = cosine_similarity(q_vec, self.matrix)[0]
-        results = []
-        for chunk, raw in zip(self.chunks, sims):
-            if raw <= 0:
-                continue
-            weight = AUTHORITY_WEIGHT.get(chunk.status, 0.5)
-            weighted = float(raw) * weight
-            results.append(
-                RetrievedChunk(
-                    chunk=chunk,
-                    raw_score=float(raw),
-                    weighted_score=weighted,
-                    authoritative=is_authoritative(chunk),
-                )
-            )
-        results.sort(key=lambda r: r.weighted_score, reverse=True)
-        return results[:top_k]
+        return self._ranked_results(query, include_zero_overlap=False)[:top_k]
 
     def detect_conflict(self, query: str) -> dict | None:
         """Return conflict info if the query matches a known conflict topic
@@ -192,20 +226,7 @@ class Retriever:
         because it belongs to the relevant document -- `search()`/
         `_search_all()` filter these out for ranking purposes, which is
         correct there but wrong for expansion."""
-        q_vec = self.vectorizer.transform([query])
-        sims = cosine_similarity(q_vec, self.matrix)[0]
-        out = []
-        for chunk, raw in zip(self.chunks, sims):
-            weight = AUTHORITY_WEIGHT.get(chunk.status, 0.5)
-            out.append(
-                RetrievedChunk(
-                    chunk=chunk,
-                    raw_score=float(raw),
-                    weighted_score=float(raw) * weight,
-                    authoritative=is_authoritative(chunk),
-                )
-            )
-        return out
+        return self._ranked_results(query, include_zero_overlap=True)
 
     def retrieve_for_agent(
         self, query: str, top_docs: int = 3, raw_flag_threshold: float = 0.18, max_chunks: int = 10
@@ -245,7 +266,8 @@ class Retriever:
         flagged = [
             r
             for r in all_results
-            if not r.authoritative and r.raw_score >= raw_flag_threshold
+            if not r.authoritative
+            and (r.raw_score >= raw_flag_threshold or r.semantic_score >= SEMANTIC_CANDIDATE_THRESHOLD)
         ][:3]
         conflict = self.detect_conflict(query)
         return {
