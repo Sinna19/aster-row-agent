@@ -156,8 +156,8 @@ def _format_chunk(rc: RetrievedChunk, authoritative: bool) -> str:
 
 
 class Agent:
-    def __init__(self, kb_dir: str, orders_path: str, log_path: str | None = None):
-        self.retriever = Retriever(kb_dir)
+    def __init__(self, kb_dir: str, orders_path: str, log_path: str | None = None, embedding_model=None):
+        self.retriever = Retriever(kb_dir, embedding_model=embedding_model)
         self.order_tool = OrderLookupTool(orders_path)
         self.sessions = SessionStore()
         self.client = OpenAI(base_url=GROQ_BASE_URL, api_key=os.environ.get("GROQ_API_KEY"))
@@ -185,11 +185,23 @@ class Agent:
             "history_len": len(session.messages),
             "retrieval": {
                 "authoritative": [
-                    {"file": r.chunk.filename, "heading": r.chunk.heading, "score": r.weighted_score}
+                    {
+                        "file": r.chunk.filename,
+                        "heading": r.chunk.heading,
+                        "hybrid_score": r.weighted_score,
+                        "lexical_score": r.raw_score,
+                        "semantic_score": r.semantic_score,
+                    }
                     for r in retrieval["authoritative"]
                 ],
                 "flagged_non_authoritative": [
-                    {"file": r.chunk.filename, "heading": r.chunk.heading, "score": r.raw_score}
+                    {
+                        "file": r.chunk.filename,
+                        "heading": r.chunk.heading,
+                        "hybrid_score": r.weighted_score,
+                        "lexical_score": r.raw_score,
+                        "semantic_score": r.semantic_score,
+                    }
                     for r in retrieval["flagged_non_authoritative"]
                 ],
                 "conflict": retrieval["conflict"]["topic"] if retrieval["conflict"] else None,

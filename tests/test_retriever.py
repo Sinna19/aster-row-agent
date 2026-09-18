@@ -1,6 +1,8 @@
 import os
 import sys
 
+import numpy as np
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.retriever import Retriever
@@ -8,8 +10,24 @@ from app.retriever import Retriever
 KB_DIR = os.path.join(os.path.dirname(__file__), "..", "knowledge-base")
 
 
+class FakeEmbeddingModel:
+    """Keeps lexical regression tests offline; semantic behavior is tested separately."""
+    def encode(self, texts, **kwargs):
+        return np.zeros((len(texts), 4), dtype=np.float32)
+
+
+class ParaphraseEmbeddingModel:
+    """A deterministic stand-in proving the semantic lane is considered."""
+    def encode(self, texts, **kwargs):
+        vectors = []
+        for text in texts:
+            is_warranty_concept = "warranty" in text.lower() or "coverage" in text.lower()
+            vectors.append([1.0, 0.0] if is_warranty_concept else [0.0, 1.0])
+        return np.asarray(vectors, dtype=np.float32)
+
+
 def get_retriever():
-    return Retriever(KB_DIR)
+    return Retriever(KB_DIR, embedding_model=FakeEmbeddingModel())
 
 
 def test_current_policy_outranks_legacy():
@@ -64,3 +82,11 @@ def test_unrelated_query_returns_low_or_no_results():
     # should not confidently return a strong match; either empty or very low score
     if results:
         assert results[0].raw_score < 0.3
+
+
+def test_semantic_lane_can_retrieve_a_zero_lexical_overlap_paraphrase():
+    r = Retriever(KB_DIR, embedding_model=ParaphraseEmbeddingModel())
+    results = r.search("coverage", top_k=5)
+    warranty = next(res for res in results if res.chunk.filename == "07-warranty.md")
+    assert warranty.raw_score == 0.0
+    assert warranty.semantic_score == 1.0

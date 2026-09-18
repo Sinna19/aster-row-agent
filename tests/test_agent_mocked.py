@@ -9,12 +9,19 @@ import os
 import sys
 from types import SimpleNamespace
 
+import numpy as np
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.agent import Agent, new_session_id
 
 KB_DIR = os.path.join(os.path.dirname(__file__), "..", "knowledge-base")
 ORDERS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "orders.json")
+
+
+class FakeEmbeddingModel:
+    def encode(self, texts, **kwargs):
+        return np.zeros((len(texts), 4), dtype=np.float32)
 
 
 def _tool_call(call_id, name, arguments: dict):
@@ -64,7 +71,7 @@ def test_agent_calls_order_lookup_and_never_leaks_pii_to_model(monkeypatch):
     import app.agent as agent_mod
 
     monkeypatch.setattr(agent_mod, "OpenAI", FakeGroqClient)
-    agent = Agent(KB_DIR, ORDERS_PATH, log_path=None)
+    agent = Agent(KB_DIR, ORDERS_PATH, log_path=None, embedding_model=FakeEmbeddingModel())
     session_id = new_session_id()
     result = agent.respond(session_id, "Where is ORD-1007 and when should it arrive?")
 

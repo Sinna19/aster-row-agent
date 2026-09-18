@@ -264,6 +264,7 @@ def run_case(agent: Agent, case: dict) -> dict:
         "pass": passed,
         "checks": checks,
         "final_response": final_text,
+        "full_text": full_text,
     }
 
 
@@ -293,6 +294,16 @@ def main():
         default=3.0,
         help="seconds to wait between cases, to stay under free-tier rate limits (default: 3.0)",
     )
+    parser.add_argument(
+        "--llm-judge",
+        action="store_true",
+        help=(
+            "Run an optional secondary LLM-assisted annotation pass after the deterministic "
+            "run (one extra model call per case). Deterministic results remain authoritative "
+            "for pass/fail; this only reports where the two disagree, for human review. "
+            "Off by default -- costs extra tokens against your daily quota."
+        ),
+    )
     args = parser.parse_args()
 
     files = args.file or [
@@ -300,6 +311,7 @@ def main():
         os.path.join(os.path.dirname(__file__), "custom-cases.json"),
     ]
     cases = load_cases(files)
+    cases_by_id = {c["id"]: c for c in cases}
 
     if not os.environ.get("GROQ_API_KEY"):
         print("ERROR: GROQ_API_KEY is not set. Export it (see .env.example) and re-run.")
@@ -340,6 +352,37 @@ def main():
         print(f"{cat:25s} {n_pass}/{len(rs)}")
     print("-" * 75)
     print(f"{'TOTAL':25s} {total_pass}/{len(results)}")
+
+    if args.llm_judge:
+        print("\n" + "=" * 75)
+        print("LLM-ASSISTED SECONDARY ANNOTATION (advisory only -- deterministic score above is official)")
+        print("=" * 75)
+        from evaluation.llm_judge import judge_case
+
+        agreements, disagreements, judge_errors = 0, 0, 0
+        for i, r in enumerate(results):
+            if i > 0 and args.delay > 0:
+                time.sleep(args.delay)
+            print(f"  judging {r['id']}...", file=sys.stderr)
+            verdict = judge_case(agent.client, cases_by_id[r["id"]], r["checks"], r["full_text"])
+            r["llm_judge"] = verdict
+            if verdict["error"]:
+                judge_errors += 1
+                continue
+            if verdict["matches_deterministic_result"]:
+                agreements += 1
+            else:
+                disagreements += 1
+                print(f"\nDISAGREEMENT on {r['id']} (deterministic: {'PASS' if r['pass'] else 'FAIL'}):")
+                print(f"  judge says: {verdict['overall_semantic_verdict']} -- {verdict['explanation']}")
+
+        print(f"\n{'-' * 75}")
+        print(f"Agreements: {agreements}  Disagreements: {disagreements}  Judge errors: {judge_errors}")
+        print(
+            "A disagreement does NOT change the official score above -- it flags a case worth "
+            "a human look, since either the deterministic check has a paraphrase-matching gap "
+            "or the LLM judge itself is wrong (LLM judges are not perfectly reliable either)."
+        )
 
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
