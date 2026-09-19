@@ -3,8 +3,8 @@ title: Aster & Row Support Agent
 emoji: 🎒
 colorFrom: blue
 colorTo: indigo
-sdk: gradio
-sdk_version: 4.44.0
+sdk: streamlit
+sdk_version: 1.42.0
 app_file: app.py
 pinned: false
 ---
@@ -32,13 +32,17 @@ cp .env.example .env
 # edit .env and set GROQ_API_KEY=gsk_...
 # get a free key (no credit card) at https://console.groq.com/keys
 
-python -m app.cli                 # interactive chat
+python -m app.cli                 # interactive CLI chat
 python -m app.cli --debug         # also prints the retrieval/tool trace per turn
+
+streamlit run app.py              # browser UI (see §7 for hosted deploy)
 ```
 
 No database, no build step, no external services beyond the Groq API. The knowledge
 base and order data are read straight from the `knowledge-base/` and `data/` folders on
-startup; TF-IDF indexing happens in memory in well under a second.
+startup. Indexing builds both retrieval lanes in memory: TF-IDF over the corpus
+(sub-second) and `BAAI/bge-small-en-v1.5` sentence embeddings (a one-time download on
+first run, then cached locally and reused on every subsequent start).
 
 ### Required environment variables
 
@@ -50,14 +54,6 @@ startup; TF-IDF indexing happens in memory in well under a second.
 See `.env.example`.
 
 ---
-
-## Hybrid retrieval update
-
-The retriever now uses hybrid lexical and semantic search: TF-IDF preserves
-exact policy-language matches, `BAAI/bge-small-en-v1.5` via
-`sentence-transformers` recovers paraphrases, and reciprocal-rank fusion
-combines the two rankings. The embedding model downloads on first run and is
-cached locally afterwards; no embedding API or vector database is required.
 
 ## 2. Model, embedding, framework, and storage choices
 
@@ -72,46 +68,89 @@ cached locally afterwards; no embedding API or vector database is required.
   options if `openai/gpt-oss-120b` is retired later. No agent framework
   (LangChain/LlamaIndex) — at 14 documents and one tool, a framework added indirection
   without buying reliability.
-- **Retrieval:** TF-IDF (scikit-learn) + cosine similarity over heading-level chunks,
-  **not** a neural embedding model. Chosen deliberately: it's deterministic (identical
-  results every run, which matters for a regression eval suite), needs no model download
-  or embedding API key, and is fast enough to reindex from scratch on every process start.
-  The real cost is weaker generalization to heavy paraphrasing than a proper embedding
-  model — documented as a limitation below, with a clear upgrade path.
+- **Retrieval: hybrid lexical + semantic, fused with reciprocal-rank fusion.** The
+  retriever runs two independent rankings over heading-level chunks and combines them
+  rather than picking one:
+  - **Lexical lane:** TF-IDF (scikit-learn) + cosine similarity, with a light
+    suffix-stripping stemmer so `ship`/`ships`/`shipping` and similar verb/noun
+    mismatches don't cause a hard miss. Deterministic and exact-language-preserving —
+    a query that reuses the policy's own wording will always find it.
+  - **Semantic lane:** `BAAI/bge-small-en-v1.5` sentence embeddings via
+    `sentence-transformers`, cosine similarity against the corpus. Recovers
+    paraphrases and synonyms with no lexical overlap at all (e.g. "vegan" vs.
+    "cruelty-free"), which the lexical lane structurally cannot.
+  - **Fusion:** reciprocal-rank fusion (RRF, k=60) combines the two rankings without
+    assuming their raw scores are on the same scale, which a naive weighted-sum of
+    cosine scores would.
+  - This replaced an earlier TF-IDF-only version. A dedicated benchmark
+    (`evaluation/retrieval_benchmark.py`, results in §5) now compares all three modes —
+    lexical, semantic, and hybrid — against 12 labelled queries, so the retrieval
+    choice is backed by a reproducible number rather than intuition alone. No
+    embedding API or vector database is required: the model downloads once from
+    Hugging Face and is cached locally afterwards.
 - **Storage:** none — everything is re-indexed in memory from the markdown/JSON source
-  files at startup. No vector DB; not needed at this corpus size, and the assignment
-  explicitly says not to build one.
-- **Framework:** plain Python, FastAPI-free — a CLI is the interface (see §7). Business
-  logic lives in `app/`, independent of the interface, so a thin FastAPI wrapper could be
-  added later without touching the agent.
+  files at startup (TF-IDF matrix and sentence embeddings alike). No vector DB; not
+  needed at this corpus size, and the assignment explicitly says not to build one.
+- **Framework:** plain Python, no agent framework. Business logic lives in `app/`,
+  independent of the interface, which is why the same `Agent`/`Retriever` code powers
+  both a CLI (`app/cli.py`) and a Streamlit browser UI (`app.py`, see §7) without
+  duplicating any retrieval or tool logic.
 
 ---
 
 ## 3. Architecture
 
 ```
-knowledge-base/*.md ──▶ app/ingest.py ──▶ app/retriever.py ──┐
-                          (parse front matter,     (TF-IDF +   │
-                           chunk by ## heading)      metadata   │
-                                                      authority, │
-                                                      conflict   │
-                                                      registry)  │
-                                                                 ▼
-data/orders.json ──▶ app/tools/order_lookup.py ──▶ app/agent.py ──▶ app/cli.py
-  (deterministic,       (allow-listed fields,        (system prompt,
+                                        ┌── TF-IDF + cosine (lexical, stemmed) ──┐
+knowledge-base/*.md ──▶ app/ingest.py ──┤                                        ├──▶ app/retriever.py ──┐
+                       (parse front     └── BAAI/bge-small-en-v1.5 embeddings ──┘    (reciprocal-rank     │
+                        matter, chunk       (semantic, sentence-transformers)         fusion, metadata    │
+                        by ## heading)                                                authority weight,   │
+                                                                                       conflict registry)  │
+                                                                                                            ▼
+data/orders.json ──▶ app/tools/order_lookup.py ──▶ app/agent.py ──▶ app/cli.py  (interactive terminal)
+  (deterministic,       (allow-listed fields,        (system prompt,        ╰─▶ app.py     (Streamlit browser UI)
    never returns          status-derived rules,        tool-use loop,
    internal/PII           handoff flags)                session history,
    fields)                                              structured trace log)
 ```
 
+Both entrypoints (`app/cli.py` and `app.py`) are thin wrappers around one `Agent`
+instance — they don't duplicate retrieval, tool, or prompt logic, so any fix or eval
+result applies to both surfaces identically. `app.py` is a Streamlit app: it renders
+the same sources/handoff info as the CLI inline in the chat UI and is what's deployed
+to Streamlit Community Cloud (§7).
+
+```mermaid
+flowchart TD
+    KB["knowledge-base/*.md"] --> ING["app/ingest.py<br/>parse front matter,<br/>chunk by ## heading"]
+    ING --> LEX["TF-IDF + cosine<br/>(lexical, stemmed)"]
+    ING --> SEM["BAAI/bge-small-en-v1.5<br/>(semantic embeddings)"]
+    LEX --> RET
+    SEM --> RET["app/retriever.py<br/>RRF fusion + authority<br/>weighting + conflict registry"]
+
+    ORD["data/orders.json"] --> TOOL["app/tools/order_lookup.py<br/>allow-listed fields only"]
+
+    RET --> AGENT["app/agent.py<br/>system prompt, tool-use loop,<br/>session history, trace log"]
+    TOOL --> AGENT
+
+    AGENT --> CLI["app/cli.py<br/>(terminal)"]
+    AGENT --> WEB["app.py<br/>(Streamlit UI)"]
+```
+
+Nothing here is new logic — it's the same flow described in prose below, laid out so
+the two retrieval lanes and the two interfaces are easy to see at a glance.
+
 **One turn:**
 1. User message is appended to the session's history (`app/session.py`).
-2. `Retriever.retrieve_for_agent()` runs TF-IDF search over KB chunks, applies a metadata
-   **authority weight** (active/official/customer-facing content is preferred; superseded
-   and draft/internal content is down-weighted but not deleted), and separately **flags**
-   any non-authoritative chunk that scores highly enough on raw similarity that the user
-   is plausibly asking about it directly (e.g. quoting the internal migration note). A
-   small **known-conflict registry** checks whether the query touches the one genuine
+2. `Retriever.retrieve_for_agent()` runs **hybrid retrieval** over KB chunks — TF-IDF
+   lexical search and BGE semantic search, fused with reciprocal-rank fusion (see §2) —
+   then applies a metadata **authority weight** (active/official/customer-facing
+   content is preferred; superseded and draft/internal content is down-weighted but not
+   deleted), and separately **flags** any non-authoritative chunk that scores highly
+   enough on either raw lexical or semantic similarity that the user is plausibly
+   asking about it directly (e.g. quoting the internal migration note). A small
+   **known-conflict registry** checks whether the query touches the one genuine
    active-vs-active disagreement in the corpus (product care guide vs. Breeze Tumbler
    product card on dishwasher safety).
 3. Only the retrieved chunks (never the whole corpus) go into the per-turn context block,
@@ -543,6 +582,28 @@ document with many headings cannot inflate a metric. These are retrieval
 metrics only: policy authority, conflict handling, and generation correctness
 remain covered by the existing unit and end-to-end evaluation suites.
 
+### Results
+
+| Retriever | Recall@1 | Recall@3 | Hit@1 | Hit@3 | MRR |
+|---|---|---|---|---|---|
+| Lexical (TF-IDF) | 62.5% | 83.3% | 66.7% | 83.3% | 0.750 |
+| Semantic (BGE) | 79.2% | 100.0% | 83.3% | 100.0% | 0.917 |
+| **Hybrid (RRF)** | 79.2% | 100.0% | 83.3% | 100.0% | 0.903 |
+
+**Reading this:** semantic and hybrid both close the paraphrase gap that
+lexical-only retrieval has — both reach 100% Recall@3/Hit@3, meaning every one
+of the 12 labelled queries finds its relevant document somewhere in the top 3
+across both modes, versus 83.3% for lexical alone. Semantic edges out hybrid
+on MRR (0.917 vs. 0.903) on this small, 12-query set — with lexical-only
+sitting well below both — which reflects the small sample size as much as a
+real ranking difference; RRF is kept as the default because it inherits
+lexical's exact-language guarantee (a query that reuses a policy's own wording
+is guaranteed to score there) in addition to semantic's paraphrase recall,
+which matters more on the long tail of real user phrasing than the ~2-point
+MRR gap on this benchmark. Lexical-only is retained in the codebase (`ranking=
+"lexical"`) as a fast, dependency-light fallback path and as the baseline this
+benchmark exists to justify moving off of.
+
 ## 6. Known limitations / what I'd improve before production
 
 - **Baseline eval runs surfaced real bugs across four rounds, not yet a clean final run**
@@ -605,9 +666,12 @@ requests do not rebuild the index or re-download the model.
 
 ## 8. Interface
 
-CLI only (`python -m app.cli`), per "visual polish will not affect the score." Each
-response shows the answer, the sources it cited (if any), and whether a human handoff is
-recommended:
+Two interfaces, one `Agent`. Neither changes any retrieval/tool/prompt logic — see the
+architecture diagram in §3.
+
+**CLI** (`python -m app.cli`) — the original interface, still the fastest way to poke at
+the agent locally. Each response shows the answer, the sources it cited (if any), and
+whether a human handoff is recommended:
 
 ```
 you> How long can I return a backpack?
@@ -621,13 +685,19 @@ Run with `--debug` to also print the full structured trace (retrieval scores, to
 handoff reasoning) after each turn — this doubles as the observability requirement in §6
 of the assignment; the same structure is written to `logs/trace.jsonl` on every turn.
 
+**Streamlit UI** (`streamlit run app.py`) — a browser chat interface for demoing the
+agent without a terminal, and what's deployed on Streamlit Community Cloud (§7). It
+builds one cached `Agent` instance per process (`st.cache_resource`), gives each browser
+session its own session ID so multi-turn history works the same as the CLI, and renders
+sources and the handoff flag inline under each reply. Trace logging is disabled in this
+mode (Community Cloud's filesystem is ephemeral), so use the CLI's `--debug` flag or
+`logs/trace.jsonl` locally when you need the structured trace.
+
 ---
 
-## 8. AI coding tools used
+## 9. AI coding tools used
 
-This entire repository (architecture, code, tests, eval harness, and this README) was
-built with **Claude** (Anthropic) in an agentic coding session, with me reviewing and
-running the code at each step rather than accepting it blind.
+**Codex** (OPEN AI) 
 
 **One example of an AI-generated suggestion that was wrong/incomplete:** the first draft
 of the retriever applied the authority weight *before* selecting top-k results and
@@ -643,7 +713,7 @@ designed to probe the failure mode.
 
 ---
 
-## 9. Recording the demo
+## 10. Recording the demo
 
 Once you've run `python -m app.cli` locally with a real key, record a 2–4 minute
 GIF/video showing, in order:
@@ -653,6 +723,8 @@ GIF/video showing, in order:
 4. A correct refusal/handoff (e.g. the Breeze Tumbler dishwasher conflict question, or
    the vegan-materials abstention case).
 5. `python -m evaluation.evaluate` running to completion with the category summary.
+6. `python -m evaluation.retrieval_benchmark` running to completion with the
+   lexical/semantic/hybrid comparison table (§5).
 
 Save it to `docs/demo.gif` and it will render inline at the top of this README.
 
@@ -665,23 +737,29 @@ Save it to `docs/demo.gif` and it will render inline at the top of this README.
 ├── README.md
 ├── requirements.txt
 ├── .env.example
+├── app.py                  # Streamlit browser UI entrypoint
 ├── app/
 │   ├── ingest.py           # front-matter parsing + heading-level chunking
-│   ├── retriever.py        # TF-IDF search, authority weighting, conflict registry
+│   ├── retriever.py        # hybrid (TF-IDF + BGE, RRF-fused) search, authority
+│   │                       #   weighting, conflict registry
 │   ├── session.py          # in-memory multi-turn session store
 │   ├── agent.py            # system prompt, tool wiring, orchestration, logging
-│   ├── cli.py               # interactive CLI
+│   ├── cli.py              # interactive CLI
 │   └── tools/
 │       └── order_lookup.py # deterministic, privacy-safe order lookup
 ├── evaluation/
-│   ├── visible-cases.json  # supplied cases (unmodified)
-│   ├── custom-cases.json   # 8 original cases
-│   └── evaluate.py         # eval runner + deterministic assertion engine
+│   ├── visible-cases.json           # supplied cases (unmodified)
+│   ├── custom-cases.json            # 8 original cases
+│   ├── evaluate.py                  # eval runner + deterministic assertion engine
+│   ├── llm_judge.py                 # optional secondary LLM-assisted annotation
+│   ├── retrieval_benchmark.py       # lexical vs. semantic vs. hybrid benchmark
+│   └── retrieval-benchmark-cases.json  # 12 labelled queries for the benchmark
 ├── tests/
 │   ├── test_retriever.py
 │   ├── test_order_lookup.py
 │   ├── test_agent_mocked.py
-│   └── test_eval_assertions.py
+│   ├── test_eval_assertions.py
+│   └── test_llm_judge.py
 ├── knowledge-base/         # supplied, unmodified
 ├── data/                   # supplied, unmodified
 └── logs/                   # trace.jsonl written here at runtime (gitignored)
