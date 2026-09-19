@@ -55,6 +55,7 @@ AUTHORITY_WEIGHT = {
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 RRF_K = 60
 SEMANTIC_CANDIDATE_THRESHOLD = 0.45
+RANKING_MODES = frozenset({"lexical", "semantic", "hybrid"})
 
 _TOKEN_RE = re.compile(r"[a-zA-Z]+")
 _SUFFIXES = ("ing", "edly", "ed", "ies", "es", "s")
@@ -165,16 +166,30 @@ class Retriever:
         semantic = self.embedding_matrix @ query_embedding
         return lexical, semantic, self._rrf_scores(lexical, semantic)
 
-    def _ranked_results(self, query: str, include_zero_overlap: bool) -> list[RetrievedChunk]:
+    def _ranked_results(
+        self, query: str, include_zero_overlap: bool, ranking: str = "hybrid"
+    ) -> list[RetrievedChunk]:
+        if ranking not in RANKING_MODES:
+            raise ValueError(f"ranking must be one of {sorted(RANKING_MODES)}, got {ranking!r}")
         lexical, semantic, hybrid = self._scores(query)
+        ranking_scores = {"lexical": lexical, "semantic": semantic, "hybrid": hybrid}[ranking]
         results = []
-        for chunk, lexical_score, semantic_score, hybrid_score in zip(self.chunks, lexical, semantic, hybrid):
-            if not include_zero_overlap and lexical_score <= 0 and semantic_score < SEMANTIC_CANDIDATE_THRESHOLD:
+        for chunk, lexical_score, semantic_score, hybrid_score, ranking_score in zip(
+            self.chunks, lexical, semantic, hybrid, ranking_scores
+        ):
+            lexical_match = lexical_score > 0
+            semantic_match = semantic_score >= SEMANTIC_CANDIDATE_THRESHOLD
+            candidate = {
+                "lexical": lexical_match,
+                "semantic": semantic_match,
+                "hybrid": lexical_match or semantic_match,
+            }[ranking]
+            if not include_zero_overlap and not candidate:
                 continue
             results.append(RetrievedChunk(
                 chunk=chunk,
                 raw_score=float(lexical_score),
-                weighted_score=float(hybrid_score) * AUTHORITY_WEIGHT.get(chunk.status, 0.5),
+                weighted_score=float(ranking_score) * AUTHORITY_WEIGHT.get(chunk.status, 0.5),
                 authoritative=is_authoritative(chunk),
                 semantic_score=float(semantic_score),
                 hybrid_score=float(hybrid_score),
@@ -182,8 +197,9 @@ class Retriever:
         results.sort(key=lambda r: r.weighted_score, reverse=True)
         return results
 
-    def search(self, query: str, top_k: int = 5) -> list[RetrievedChunk]:
-        return self._ranked_results(query, include_zero_overlap=False)[:top_k]
+    def search(self, query: str, top_k: int = 5, ranking: str = "hybrid") -> list[RetrievedChunk]:
+        """Search with lexical TF-IDF, semantic BGE, or fused hybrid ranking."""
+        return self._ranked_results(query, include_zero_overlap=False, ranking=ranking)[:top_k]
 
     def detect_conflict(self, query: str) -> dict | None:
         """Return conflict info if the query matches a known conflict topic
