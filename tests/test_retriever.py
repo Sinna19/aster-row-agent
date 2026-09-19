@@ -2,6 +2,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -90,3 +91,11 @@ def test_semantic_lane_can_retrieve_a_zero_lexical_overlap_paraphrase():
     warranty = next(res for res in results if res.chunk.filename == "07-warranty.md")
     assert warranty.raw_score == 0.0
     assert warranty.semantic_score == 1.0
+
+
+def test_search_supports_each_named_ranking_mode():
+    r = get_retriever()
+    assert r.search("return a backpack", ranking="lexical")
+    assert r.search("return a backpack", ranking="hybrid")
+    with pytest.raises(ValueError, match="ranking must be one of"):
+        r.search("return a backpack", ranking="not-a-mode")

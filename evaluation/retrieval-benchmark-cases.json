@@ -1,0 +1,14 @@
+[
+  {"query": "When can I send back a backpack I purchased?", "relevant_doc_ids": ["RET-2026-01"]},
+  {"query": "Are clearance purchases refundable?", "relevant_doc_ids": ["RET-2026-02"]},
+  {"query": "My order arrived damaged. What should I do?", "relevant_doc_ids": ["OPS-2026-04"]},
+  {"query": "How quickly does standard delivery arrive?", "relevant_doc_ids": ["SHIP-2026-US"]},
+  {"query": "Will I have to pay customs fees for Canada?", "relevant_doc_ids": ["SHIP-2026-INTL"]},
+  {"query": "My zipper failed under normal use. Is it protected?", "relevant_doc_ids": ["WAR-2026-01"]},
+  {"query": "Can I alter my delivery address after checking out?", "relevant_doc_ids": ["ORD-2026-01"]},
+  {"query": "What benefits come with TrailPlus?", "relevant_doc_ids": ["MEM-2026-01"]},
+  {"query": "Can a gift card balance be refunded?", "relevant_doc_ids": ["PAY-2026-03"]},
+  {"query": "How should I wash my drinkware?", "relevant_doc_ids": ["CARE-2026-01"]},
+  {"query": "Are all parts of the Breeze Tumbler safe for a dishwasher?", "relevant_doc_ids": ["CARE-2026-01", "PROD-BREEZE-20"]},
+  {"query": "How do I ask for a human to take over?", "relevant_doc_ids": ["SUP-2026-01"]}
+]

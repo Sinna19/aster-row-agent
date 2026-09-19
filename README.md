@@ -522,6 +522,27 @@ regression test that now catches each one. (All three are already fixed on `main
 
 
 
+## Retrieval benchmark
+
+The repository includes a reproducible document-retrieval benchmark that
+compares the three ranking strategies used during development:
+
+```bash
+python -m evaluation.retrieval_benchmark
+```
+
+It evaluates TF-IDF-only lexical search, `BAAI/bge-small-en-v1.5` semantic
+search, and reciprocal-rank-fused hybrid search against 12 labelled queries in
+`evaluation/retrieval-benchmark-cases.json`. The queries intentionally include
+paraphrases (for example, a zipper failure instead of the phrase "warranty"),
+exact policy wording, and the known multi-document tumbler conflict.
+
+The report prints macro Recall@1, Recall@3, Hit@1, Hit@3, and MRR at the
+document level. It deduplicates heading-level chunks before scoring, so a
+document with many headings cannot inflate a metric. These are retrieval
+metrics only: policy authority, conflict handling, and generation correctness
+remain covered by the existing unit and end-to-end evaluation suites.
+
 ## 6. Known limitations / what I'd improve before production
 
 - **Baseline eval runs surfaced real bugs across four rounds, not yet a clean final run**
