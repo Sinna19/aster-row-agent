@@ -15,6 +15,7 @@ A reliability-focused RAG support agent for the Aster & Row take-home. Built to 
 four failure modes called out in the brief: conflicting policy answers, invented order
 info, lost multi-turn context, and unsafe retrieved content.
 
+![Tests](https://github.com/Sinna19/aster-row-agent/actions/workflows/tests.yml/badge.svg)
 
 ---
 
