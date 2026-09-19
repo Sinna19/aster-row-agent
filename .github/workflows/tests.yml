@@ -1,0 +1,33 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run mocked unit tests
+        # These tests never call the live Groq API or download the BGE model,
+        # so they run fast and free on every push/PR. The live 23-case eval
+        # suite (evaluation/evaluate.py) needs GROQ_API_KEY and is intentionally
+        # NOT run here -- see the manual eval workflow for that.
+        run: pytest -v tests/
