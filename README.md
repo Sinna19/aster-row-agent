@@ -19,6 +19,16 @@ info, lost multi-turn context, and unsafe retrieved content.
 
 ---
 
+### 🚀 Try the Live App
+
+**[Launch Aster & Row Support Agent](https://retail-support-ai.streamlit.app/)**
+
+A deployed, interactive customer-support agent built with Streamlit, featuring hybrid retrieval, policy-grounded responses, multi-turn conversations, and privacy-safe order lookup.
+
+Try asking about shipping, returns, product policies, or a sample order such as `ORD-1007`.
+
+No local installation required.
+
 ## 1. Setup and run instructions
 
 ```bash
