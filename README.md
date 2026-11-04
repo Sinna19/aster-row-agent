@@ -11,7 +11,7 @@ pinned: false
 
 # Aster & Row Support Agent
 
-A reliability-focused RAG support agent for the Aster & Row take-home. Built to survive the
+A reliability-focused RAG support agent. Built to survive the
 four failure modes called out in the brief: conflicting policy answers, invented order
 info, lost multi-turn context, and unsafe retrieved content.
 
