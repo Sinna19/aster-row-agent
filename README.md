@@ -11,8 +11,8 @@ pinned: false
 
 # Aster & Row Support Agent
 
-A reliability-focused RAG support agent. Built to survive the
-four failure modes called out in the brief: conflicting policy answers, invented order
+A reliability-focused RAG support agent. Built to survive
+four failure modes : conflicting policy answers, invented order
 info, lost multi-turn context, and unsafe retrieved content.
 
 ![Tests](https://github.com/Sinna19/aster-row-agent/actions/workflows/tests.yml/badge.svg)
